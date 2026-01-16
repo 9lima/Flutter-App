@@ -1,136 +1,256 @@
-import 'dart:async';
 import 'dart:io';
-
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:cryptography/cryptography.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
-Future<void> main() async {
-  // Ensure that plugin services are initialized so that `availableCameras()`
-  // can be called before `runApp()`
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Obtain a list of the available cameras on the device.
-  final cameras = await availableCameras();
-
-  // Get a specific camera from the list of available cameras.
-  final firstCamera = cameras.first;
-
-  runApp(
-    MaterialApp(
-      theme: ThemeData.dark(),
-      home: TakePictureScreen(
-        // Pass the appropriate camera to the TakePictureScreen widget.
-        camera: firstCamera,
-      ),
-    ),
-  );
+  runApp(const MyApp());
 }
 
-// A screen that allows users to take a picture using a given camera.
-class TakePictureScreen extends StatefulWidget {
-  const TakePictureScreen({super.key, required this.camera});
-
-  final CameraDescription camera;
+class MyApp extends StatelessWidget {
+  const MyApp({Key? key}) : super(key: key);
 
   @override
-  TakePictureScreenState createState() => TakePictureScreenState();
+  Widget build(BuildContext context) {
+    return const MaterialApp(debugShowCheckedModeBanner: false, home: Home());
+  }
 }
 
-class TakePictureScreenState extends State<TakePictureScreen> {
-  late CameraController _controller;
-  late Future<void> _initializeControllerFuture;
+class Home extends StatefulWidget {
+  const Home({Key? key}) : super(key: key);
+
+  @override
+  State<Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<Home> {
+  String? _responseText;
+  dynamic pkey;
+
+  late CameraController controller;
+  late List<CameraDescription> cameras;
+  Uint8List? capturedImage;
+  File? _selectedImgae;
 
   @override
   void initState() {
     super.initState();
-    // To display the current output from the Camera,
-    // create a CameraController.
-    _controller = CameraController(
-      // Get a specific camera from the list of available cameras.
-      widget.camera,
-      // Define the resolution to use.
-      ResolutionPreset.medium,
-    );
-
-    // Next, initialize the controller. This returns a Future.
-    _initializeControllerFuture = _controller.initialize();
+    _postData();
   }
 
-  @override
-  void dispose() {
-    // Dispose of the controller when the widget is disposed.
-    _controller.dispose();
-    super.dispose();
+  Future<void> _postData() async {
+    final url = Uri.parse('http://10.0.2.2:8000/');
+
+    final body = jsonEncode({'body': 'POST request from Flutter'});
+
+    try {
+      final response = await http.post(
+        url,
+        headers: <String, String>{
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+        body: body,
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        setState(() {
+          _responseText = response.body;
+        });
+      } else {
+        setState(() {
+          _responseText = 'Failed ${response.statusCode}\n${response.body}';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _responseText = 'Error: $e';
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Take a picture')),
-      // You must wait until the controller is initialized before displaying the
-      // camera preview. Use a FutureBuilder to display a loading spinner until the
-      // controller has finished initializing.
-      body: FutureBuilder<void>(
-        future: _initializeControllerFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.done) {
-            // If the Future is complete, display the preview.
-            return CameraPreview(_controller);
-          } else {
-            // Otherwise, display a loading indicator.
-            return const Center(child: CircularProgressIndicator());
-          }
-        },
+      appBar: AppBar(
+        backgroundColor: const Color.fromARGB(255, 0, 0, 0),
+        title: const Text('Flutter App', style: TextStyle(color: Colors.white)),
+        centerTitle: true,
       ),
-      floatingActionButton: FloatingActionButton(
-        // Provide an onPressed callback.
-        onPressed: () async {
-          // Take the Picture in a try / catch block. If anything goes wrong,
-          // catch the error.
-          try {
-            // Ensure that the camera is initialized.
-            await _initializeControllerFuture;
-
-            // Attempt to take a picture and get the file `image`
-            // where it was saved.
-            final image = await _controller.takePicture();
-
-            if (!context.mounted) return;
-
-            // If the picture was taken, display it on a new screen.
-            await Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (context) => DisplayPictureScreen(
-                  // Pass the automatically generated path to
-                  // the DisplayPictureScreen widget.
-                  imagePath: image.path,
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.only(top: 30),
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: Column(
+              children: [
+                SizedBox(
+                  width: 200,
+                  child: ElevatedButton(
+                    onPressed: _pickGallery,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      padding: const EdgeInsets.symmetric(vertical: 15),
+                    ),
+                    child: const Text(
+                      'Gallery',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: Colors.black,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-            );
-          } catch (e) {
-            // If an error occurs, log the error to the console.
-            print(e);
-          }
-        },
-        child: const Icon(Icons.camera_alt),
+                const SizedBox(height: 20),
+                _selectedImgae == null
+                    ? Align(
+                        alignment: Alignment.topCenter,
+                        child: Column(
+                          children: [
+                            SizedBox(
+                              width: 200,
+                              child: ElevatedButton(
+                                onPressed: () async {
+                                  await captureImageBytes();
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blue,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 15,
+                                  ),
+                                ),
+                                child: const Text(
+                                  'Camera',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                    color: Colors.black,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            Text('select the image'),
+                          ],
+                        ),
+                      )
+                    : Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              SizedBox(
+                                width: 200,
+                                child: ElevatedButton(
+                                  onPressed: () async {
+                                    await captureImageBytes();
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.blue,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 15,
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    'Camera',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      color: Colors.black,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 20),
+                              SizedBox(
+                                width: 200,
+                                child: ElevatedButton(
+                                  onPressed: () {
+                                    // Logic for the new "UP" button
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.green,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 16,
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    'Upload',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      color: Colors.black,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 20),
+                          Image.file(_selectedImgae!, fit: BoxFit.cover),
+
+                          SizedBox(height: 20),
+                        ],
+                      ),
+                const SizedBox(height: 100),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
-}
 
-// A widget that displays the picture taken by the user.
-class DisplayPictureScreen extends StatelessWidget {
-  final String imagePath;
-
-  const DisplayPictureScreen({super.key, required this.imagePath});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Display the Picture')),
-      // The image is stored as a file on the device. Use the `Image.file`
-      // constructor with the given path to display the image.
-      body: Image.file(File(imagePath)),
+  Future _pickGallery() async {
+    final returnedImage = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
     );
+
+    if (returnedImage == null) return;
+    setState(() {
+      _selectedImgae = File(returnedImage.path);
+    });
   }
+
+  // File? _selectedImage;
+
+  Future<void> captureImageBytes() async {
+    cameras = await availableCameras();
+
+    controller = CameraController(
+      cameras.first,
+      ResolutionPreset.ultraHigh,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.jpeg,
+    );
+
+    await controller.initialize();
+    await controller.setFocusMode(FocusMode.auto);
+
+    XFile imageFile = await controller.takePicture();
+    if (imageFile.path.isEmpty) return;
+
+    final bytes = await File(imageFile.path).readAsBytes();
+
+    setState(() {
+      capturedImage = bytes;
+      _selectedImgae = File(imageFile.path);
+    });
+  }
+
+  // Future _pickCamera() async {
+  //   final returnedImage = await ImagePicker().pickImage(
+  //     source: ImageSource.camera,
+  //   );
+
+  //   if (returnedImage == null) return;
+  //   setState(() {
+  //     _selectedImgae = File(returnedImage.path);
+  //   });
+  // }
 }
