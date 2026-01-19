@@ -1,203 +1,237 @@
 import 'dart:io';
-import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:cryptography/cryptography.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 
-void main() {
+// late List<CameraDescription> cameras;
+// late CameraController _controller;
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MyApp());
+  runApp(const CameraPage());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
+class CameraPage extends StatefulWidget {
+  const CameraPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return const MaterialApp(debugShowCheckedModeBanner: false, home: Home());
-  }
+  State<CameraPage> createState() => _CameraPageState();
 }
 
-class Home extends StatefulWidget {
-  const Home({Key? key}) : super(key: key);
+class _CameraPageState extends State<CameraPage> {
+  // VARIABLES
+  CameraController? _controller;
+  Uint8List? _webImage;
+  XFile? _capturedImage;
+  bool _showCamera = false;
+  int? _statusCode;
 
-  @override
-  State<Home> createState() => _HomeState();
-}
-
-class _HomeState extends State<Home> {
-  String? _responseText;
-  dynamic pkey;
-
-  late CameraController controller;
-  late List<CameraDescription> cameras;
-  Uint8List? capturedImage;
-  File? _selectedImgae;
-
-  @override
-  void initState() {
-    super.initState();
-    _postData();
-  }
-
-  Future<void> _postData() async {
-    final url = Uri.parse('http://10.0.2.2:8000/');
-
-    final body = jsonEncode({'body': 'POST request from Flutter'});
-
+  // Take from Camera
+  Future<void> _openCamera() async {
     try {
-      final response = await http.post(
-        url,
-        headers: <String, String>{
-          'Content-Type': 'application/json; charset=UTF-8',
-        },
-        body: body,
+      _controller = null;
+      _capturedImage = null;
+      _webImage = null;
+      _showCamera = true;
+
+      final List<CameraDescription> cameras = await availableCameras();
+      final CameraDescription backCamera = cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
       );
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        setState(() {
-          _responseText = response.body;
-        });
-      } else {
-        setState(() {
-          _responseText = 'Failed ${response.statusCode}\n${response.body}';
-        });
-      }
-    } catch (e) {
+      _controller = CameraController(
+        backCamera,
+        ResolutionPreset.ultraHigh,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
+      await _controller!.initialize();
+      if (!mounted) return;
+
       setState(() {
-        _responseText = 'Error: $e';
+        _showCamera = true;
+      });
+    } on CameraException catch (e) {
+      debugPrint("Camera error: ${e.description}");
+    }
+  }
+
+  Future<void> _takePicture() async {
+    final dynamic image = await _controller!.takePicture();
+
+    if (kIsWeb) {
+      final bytes = await image.readAsBytes();
+      setState(() {
+        _webImage = bytes;
+        _showCamera = false;
+      });
+    } else {
+      setState(() {
+        _capturedImage = image;
+        _showCamera = false;
+      });
+    }
+  }
+
+  // Take From Gallery
+  Future _openGallery() async {
+    _controller = null;
+    _capturedImage = null;
+    _webImage = null;
+
+    final dynamic image = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      imageQuality: null,
+      requestFullMetadata: false,
+    );
+
+    if (image == null) return;
+
+    if (kIsWeb) {
+      final bytes = await image.readAsBytes();
+      setState(() {
+        _webImage = bytes;
+        _showCamera = false;
+      });
+    } else {
+      setState(() {
+        _capturedImage = image;
+        _showCamera = false;
       });
     }
   }
 
   @override
+  void dispose() {
+    _controller!.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: const Color.fromARGB(255, 0, 0, 0),
-        title: const Text('Flutter App', style: TextStyle(color: Colors.white)),
-        centerTitle: true,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.only(top: 30),
-          child: Align(
-            alignment: Alignment.topCenter,
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        appBar: AppBar(
+          backgroundColor: const Color.fromARGB(255, 0, 0, 0),
+          title: const Text(
+            'Flutter App',
+            style: TextStyle(color: Colors.white),
+          ),
+          centerTitle: true,
+        ),
+        body: SafeArea(
+          child: SingleChildScrollView(
             child: Column(
               children: [
-                SizedBox(
-                  width: 200,
-                  child: ElevatedButton(
-                    onPressed: _pickGallery,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      padding: const EdgeInsets.symmetric(vertical: 15),
-                    ),
-                    child: const Text(
-                      'Gallery',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                        color: Colors.black,
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    /// GALLERY BUTTON
+                    ElevatedButton(
+                      onPressed: _openGallery,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
                       ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                _selectedImgae == null
-                    ? Align(
-                        alignment: Alignment.topCenter,
-                        child: Column(
-                          children: [
-                            SizedBox(
-                              width: 200,
-                              child: ElevatedButton(
-                                onPressed: () async {
-                                  await captureImageBytes();
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 15,
-                                  ),
-                                ),
-                                child: const Text(
-                                  'Camera',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                    color: Colors.black,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            Text('select the image'),
-                          ],
+                      child: const Text(
+                        "Gallery",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: Colors.black,
                         ),
-                      )
-                    : Column(
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                            children: [
-                              SizedBox(
-                                width: 200,
-                                child: ElevatedButton(
-                                  onPressed: () async {
-                                    await captureImageBytes();
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.blue,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 15,
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    'Camera',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16,
-                                      color: Colors.black,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 20),
-                              SizedBox(
-                                width: 200,
-                                child: ElevatedButton(
-                                  onPressed: () {
-                                    // Logic for the new "UP" button
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.green,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 16,
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    'Upload',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16,
-                                      color: Colors.black,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 20),
-                          Image.file(_selectedImgae!, fit: BoxFit.cover),
-
-                          SizedBox(height: 20),
-                        ],
                       ),
-                const SizedBox(height: 100),
+                    ),
+                    const SizedBox(height: 10),
+
+                    /// CAMERA BUTTON
+                    ElevatedButton(
+                      onPressed: _openCamera,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                      ),
+                      child: const Text(
+                        "Camera",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: Colors.black,
+                        ),
+                      ),
+                    ),
+                    if (_capturedImage != null || _webImage != null)
+                      ElevatedButton(
+                        onPressed: () {
+                          {}
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                        ),
+                        child: _statusCode == 200
+                            ? const Text(
+                                "Done!",
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                  color: Colors.black,
+                                ),
+                              )
+                            : const Text(
+                                "Upload",
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                  color: Colors.black,
+                                ),
+                              ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+
+                /// CAMERA PREVIEW
+                if (_showCamera && _controller != null)
+                  Stack(
+                    children: [
+                      CameraPreview(_controller!),
+
+                      /// TAKE BUTTON
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                          ),
+                          onPressed: _takePicture,
+                          child: const Text(
+                            "Take",
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: Colors.black,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                const SizedBox(height: 10),
+
+                /// CAPTURED IMAGE
+                if (_capturedImage != null)
+                  Image.file(File(_capturedImage!.path), fit: BoxFit.cover)
+                else if (kIsWeb && _webImage != null)
+                  Image.memory(_webImage!)
+                else if (_capturedImage == null &&
+                    _webImage == null &&
+                    _showCamera == false)
+                  const SizedBox(height: 200, child: Text('select the image')),
               ],
             ),
           ),
@@ -206,51 +240,38 @@ class _HomeState extends State<Home> {
     );
   }
 
-  Future _pickGallery() async {
-    final returnedImage = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-    );
+  //   Future<Post> _upload(String imageFile) async {
+  //     try {
+  //       _controller?.dispose();
+  //       super.dispose();
+  //       var req = http.MultipartRequest(
+  //         "POST",
+  //         Uri.parse('http://10.0.2.2:5000'),
+  //       );
+  //       req.files.add(await http.MultipartFile.fromPath('image', imageFile.path),contentType: MediaType('image', 'jpeg'));
+  //       response = await req.send();
 
-    if (returnedImage == null) return;
-    setState(() {
-      _selectedImgae = File(returnedImage.path);
-    });
-  }
-
-  // File? _selectedImage;
-
-  Future<void> captureImageBytes() async {
-    cameras = await availableCameras();
-
-    controller = CameraController(
-      cameras.first,
-      ResolutionPreset.ultraHigh,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
-    );
-
-    await controller.initialize();
-    await controller.setFocusMode(FocusMode.auto);
-
-    XFile imageFile = await controller.takePicture();
-    if (imageFile.path.isEmpty) return;
-
-    final bytes = await File(imageFile.path).readAsBytes();
-
-    setState(() {
-      capturedImage = bytes;
-      _selectedImgae = File(imageFile.path);
-    });
-  }
-
-  // Future _pickCamera() async {
-  //   final returnedImage = await ImagePicker().pickImage(
-  //     source: ImageSource.camera,
-  //   );
-
-  //   if (returnedImage == null) return;
-  //   setState(() {
-  //     _selectedImgae = File(returnedImage.path);
-  //   });
+  //       setState(() {
+  //         // _responseData = response.body;
+  //         _statusCode = response.statusCode;
+  //       });
+  //     } catch (e) {
+  //       return;
+  //     }
+  //   }
   // }
+}
+
+class Post {
+  final Map<String, dynamic> response;
+
+  Post({required this.response});
+
+  factory Post.fromStatus(Map<String, dynamic> json) {
+    return Post(response: json['status'] as Map<String, dynamic>);
+  }
+
+  factory Post.fromMessage(Map<String, dynamic> json) {
+    return Post(response: json['message'] as Map<String, dynamic>);
+  }
 }
