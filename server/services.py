@@ -1,71 +1,152 @@
 import db as _database
-import models
+import models as _models
 import sqlalchemy.orm as _orm
+import random,string
+import asyncio, os, dotenv, pathlib 
+import datetime as _dt
+import jwt, base64
+from secrets import choice   
+from string import printable
+import schemas as _schemas
+from sqlalchemy import ForeignKey, func, select
+from sqlalchemy.ext.asyncio import (
+    AsyncAttrs,
+    create_async_engine,
+    AsyncSession,
+    async_sessionmaker,
+)
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+    selectinload,
+)
+from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 
-def create_db():
-    return _database.Base.metadata.create_all(bind=_database.engine)
+dotenv.load_dotenv(override=True)
 
-def get_db():
-    db = _database.SessionLocal()
-    try:
+class one_pad_encrypt:
+    def __init__(self, message:str):
+        self.message = message
+        self.pad=""
+        self.ciphertext = ""
+        self.plaintext = ""
+        self.pad = ''.join(choice(string.printable) for _ in range(len(self.message)))
+
+    def encrypt(self) -> str:
+        self.ciphertext = ''.join(chr(ord(m) ^ ord(p)) for m, p in zip(self.message, self.pad))
+        return self.ciphertext
+
+    def decrypt(self) -> str:
+        decrypted = ''.join(chr(ord(c) ^ ord(p)) for c, p in zip(self.ciphertext, self.pad))
+        return decrypted
+
+
+
+async def create_db():
+    async with _database.engine.begin() as conn:
+        await conn.run_sync(_models.Base.metadata.create_all)
+    await _database.engine.dispose()
+
+
+
+async def get_async_db() -> AsyncSession:
+    async with _database.async_session() as db:
         yield db
-    finally:
-        db.close()
-
-from pydantic import BaseModel, Field
-from datetime import datetime
-from typing import List, Optional
-
-# -------------------------------
-# Schemas for Incomming
-# -------------------------------
-
-class IncommingBase(BaseModel):
-    owner_id: int
 
 
-class IncommingRead(IncommingBase):
-    id: int
-    data_created: datetime
-
-    class Config:
-        orm_mode = True
-
-class IncommingData(IncommingBase):
-    data_created: datetime
-    in_token:
-    image:
-
-    class Config:
-        orm_mode = True
-
-# -------------------------------
-# Schemas for Keys
-# -------------------------------
-
-class KeysBase(BaseModel):
-    pv_key: str = Field(..., example="private_key_here")
-    pub_key: str = Field(..., example="public_key_here")
-    expires_in: datetime
+async def create_user(user: _schemas.PublicKeyRequest_Base, db: AsyncSession):
+     user_obj = _models.Keys(pv_key=private_key, pub_key=public_key, owner_id_onepadded=owner_id, )
+     db.add(user_obj)
+     db.commit(user_obj)
+     db.refresh(user_obj)
 
 
-class KeysCreate(IncommingBase):
-    pv_key: str
-    pub_key: str
-    hashed_token: str
-    data_created: datetime
+async def get_user_by_owner_id(owner_id:str , db: AsyncSession):
+    result = await db.execute(select(_models.Keys).where(_models.Keys.owner_id == owner_id))
+    if result:
+        return result.first()
+    else:
+        return None
 
-class KeysRead(KeysBase):
-    id: int
-    data_created: datetime
-    incomming: List[IncommingRead] = []  # nested incoming images
 
-    class Config:
-        orm_mode = True
+async def generate_token(user: _schemas.PublicKeyRequest_Base, secret = os.getenv("SERVER_PUB_KEY")):
+        user_schema_obj = _schemas.PublicKeyRequest_Base.model_validate(user)
+        user_dict = user_schema_obj.model_dump()
+        expire = int((_dt.datetime.now() + _dt.timedelta(minutes=3)).timestamp())
+        user_dict.update({'exp': expire})
+        encoded_jwt = jwt.encode(user_dict, secret, algorithm="EdDSA")
+        return str(encoded_jwt)
+
+def verify_token(jwt: str, private_key):
+        try:
+            payload = jwt.decode(jwt, private_key, algorithms=["EdDSA"])
+            return payload
+        except jwt.ExpiredSignatureError:
+            return None
 
 
 
+class key_generating:
+    __slots__ = ('pv_bytes', 'pub_bytes', 'pv_str', 'pub_str', 'aes_key')
 
-async def get_user_by_email():
-    return db.query(_models.)
+    def __init__(self):
+        private_key = x25519.X25519PrivateKey.generate()
+        public_key = private_key.public_key()
+
+        # Store keys as Base64 strings for easy transport / JSON
+        self.pv_bytes = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption())
+
+        self.pub_bytes = public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo)
+
+    def key_pair_bytes(self) -> tuple[bytes, bytes]:
+        return self.pv_bytes, self.pub_bytes
+
+    def key_pair_str(self) -> tuple[str, str]:
+        self.pv_str=str(self.pv_bytes.decode().splitlines()[1])
+        self.pub_str = str(self.pub_bytes.decode().splitlines()[1])
+        return self.pv_str, self.pub_str
+
+    def generate_aes_key(self, remote_public_key_b64: str) -> bytes:
+        remote_pub_bytes = base64.b64encode(remote_public_key_b64)
+        remote_public_key = x25519.X25519PublicKey.from_public_bytes(remote_pub_bytes)
+
+        shared_secret = self.pv_bytes.exchange(remote_public_key)
+
+        self.aes_key = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=None,
+            info=b"handshake data",
+        ).derive(shared_secret)
+
+        return self.aes_key
+
+
+async def key_pairs(db: AsyncSession):
+    while True:
+        pv, pub = key_generating().key_pair_str()
+        with pathlib.Path.cwd().absolute().open("a", encoding="utf-8") as f:
+            f.write(f"{pub}\t{pv}\n")
+
+        dotenv.set_key(".env", "SERVER_PV_KEY", pv)
+        dotenv.set_key(".env", "SERVER_PUB_KEY", pub)
+
+        await asyncio.sleep(11 * 60)
+
+
+
+
+
+
+if __name__ == "__main__":
+    asyncio.run(key_pairs)

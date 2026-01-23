@@ -1,10 +1,13 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'package:cryptography/cryptography.dart';
+import 'package:flutter_application_1/encrypt.dart';
 
 // late List<CameraDescription> cameras;
 // late CameraController _controller;
@@ -22,12 +25,34 @@ class CameraPage extends StatefulWidget {
 }
 
 class _CameraPageState extends State<CameraPage> {
+  @override
+  void initState() {
+    super.initState();
+    // This function runs once after the widget is created
+    // runAfterAppOpens('init');
+  }
+
+  Future<ServerKeyResponse> runAfterAppOpens(String title) async {
+    var response = await http.post(
+      Uri.parse('http://localhost:5000/key'),
+      body: jsonEncode(<String, String>{'title': title}),
+    );
+    final serverKeyRes = ServerKeyResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+    // Store secretKey, nonce, and response in state
+    setState(() {});
+    return serverKeyRes;
+  }
+
   // VARIABLES
   CameraController? _controller;
   Uint8List? _webImage;
   XFile? _capturedImage;
   bool _showCamera = false;
   int? _statusCode;
+
+  ServerKeyResponse? _serverKeyRes;
 
   // Take from Camera
   Future<void> _openCamera() async {
@@ -132,6 +157,32 @@ class _CameraPageState extends State<CameraPage> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
+                    ElevatedButton(
+                      onPressed: () async {
+                        final _serverKeyRes = await runAfterAppOpens("MyTitle");
+                      },
+                      child: const Text("Fetch Key"),
+                    ),
+                    Expanded(
+                      child: _serverKeyRes != null
+                          ? SingleChildScrollView(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text("Pub Key:\n${_serverKeyRes!.pubKey}"),
+
+                                  if (_serverKeyRes!.expiresIn != null)
+                                    Text(
+                                      "Expires In: ${_serverKeyRes!.expiresIn!.toIso8601String()}",
+                                    ),
+                                  if (_serverKeyRes!.extra != null)
+                                    Text("Extra: ${_serverKeyRes!.extra}"),
+                                ],
+                              ),
+                            )
+                          : const Text('Server response is null'),
+                    ),
+
                     /// GALLERY BUTTON
                     ElevatedButton(
                       onPressed: _openGallery,
@@ -262,16 +313,30 @@ class _CameraPageState extends State<CameraPage> {
   // }
 }
 
-class Post {
-  final Map<String, dynamic> response;
+class ServerKeyResponse {
+  final String pubKey;
+  final String jwt;
+  final DateTime? expiresIn; // optional
+  final dynamic extra; // any other data
 
-  Post({required this.response});
+  const ServerKeyResponse({
+    required this.pubKey,
+    required this.jwt,
+    this.expiresIn,
+    this.extra,
+  });
 
-  factory Post.fromStatus(Map<String, dynamic> json) {
-    return Post(response: json['status'] as Map<String, dynamic>);
+  factory ServerKeyResponse.fromJson(Map<String, dynamic> json) {
+    final pubKey = json['pub_key'] ?? '';
+    final jwt = json['jwt'] ?? '';
+
+    return ServerKeyResponse(pubKey: pubKey, jwt: jwt);
   }
 
-  factory Post.fromMessage(Map<String, dynamic> json) {
-    return Post(response: json['message'] as Map<String, dynamic>);
-  }
+  // Map<String, dynamic> toJson() => {
+  //   'pub_key': pubKey,
+  //   'jwt': jwt,
+  //   if (expiresIn != null) 'expires_in': expiresIn!.toIso8601String(),
+  //   if (extra != null) 'extra': extra,
+  // };
 }
