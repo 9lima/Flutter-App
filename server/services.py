@@ -1,33 +1,23 @@
-import db as _database
 import models as _models
 import sqlalchemy.orm as _orm
+import sqlalchemy as _sql
 import random,string
-import asyncio, os, dotenv, pathlib 
+import asyncio, os, dotenv, pathlib, threading
 import datetime as _dt
-import jwt, base64
+import jwt, base64, time, base64
 from secrets import choice   
 from string import printable
 import schemas as _schemas
 from sqlalchemy import ForeignKey, func, select
-from sqlalchemy.ext.asyncio import (
-    AsyncAttrs,
-    create_async_engine,
-    AsyncSession,
-    async_sessionmaker,
-)
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-    relationship,
-    selectinload,
-)
+from dotenv import load_dotenv, find_dotenv
+
+
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-
-
-dotenv.load_dotenv(override=True)
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import load_pem_public_key, load_pem_private_key
+from models import engine
 
 class one_pad_encrypt:
     def __init__(self, message:str):
@@ -47,54 +37,38 @@ class one_pad_encrypt:
 
 
 
-async def create_db():
-    async with _database.engine.begin() as conn:
-        await conn.run_sync(_models.Base.metadata.create_all)
-    await _database.engine.dispose()
+def create_get_db():
+    if not (_sql.inspect(_models.engine).has_table("keys") and _sql.inspect(_models.engine).has_table("users")):
+        _models.Base.metadata.drop_all(_models.engine)
+        _models.Base.metadata.create_all(_models.engine)
 
-
-
-async def get_async_db() -> AsyncSession:
-    async with _database.async_session() as db:
+    db = _models.SessionLocal()
+    try:
         yield db
+    finally:
+        db.close()
 
 
-async def create_user(user: _schemas.PublicKeyRequest_Base, db: AsyncSession):
-     user_obj = _models.Keys(pv_key=private_key, pub_key=public_key, owner_id_onepadded=owner_id, )
-     db.add(user_obj)
-     db.commit(user_obj)
-     db.refresh(user_obj)
 
-
-async def get_user_by_owner_id(owner_id:str , db: AsyncSession):
-    result = await db.execute(select(_models.Keys).where(_models.Keys.owner_id == owner_id))
+async def get_user_by_owner_id(owner_id: str , db: _orm.Session):
+    result = db.execute(select(_models.User).where(_models.User.owner_id == owner_id))
     if result:
         return result.first()
     else:
         return None
 
-
-async def generate_token(user: _schemas.PublicKeyRequest_Base, secret = os.getenv("SERVER_PUB_KEY")):
-        user_schema_obj = _schemas.PublicKeyRequest_Base.model_validate(user)
-        user_dict = user_schema_obj.model_dump()
-        expire = int((_dt.datetime.now() + _dt.timedelta(minutes=3)).timestamp())
-        user_dict.update({'exp': expire})
-        encoded_jwt = jwt.encode(user_dict, secret, algorithm="EdDSA")
-        return str(encoded_jwt)
-
-def verify_token(jwt: str, private_key):
-        try:
-            payload = jwt.decode(jwt, private_key, algorithms=["EdDSA"])
-            return payload
-        except jwt.ExpiredSignatureError:
-            return None
+def get_newest_KeyRow(db: _orm.Session):
+    stmt = (select(_models.Key).order_by(_models.Key.created_at.desc()).limit(1))
+    result = db.execute(stmt).scalar_one_or_none()
+    return result
 
 
 
 class key_generating:
-    __slots__ = ('pv_bytes', 'pub_bytes', 'pv_str', 'pub_str', 'aes_key')
+    __slots__ = ('pv_bytes', 'pub_bytes', 'pv_str', 'pub_str', 'aes_key','private_key_Ed25519','public_key_Ed25519')
 
     def __init__(self):
+
         private_key = x25519.X25519PrivateKey.generate()
         public_key = private_key.public_key()
 
@@ -130,23 +104,90 @@ class key_generating:
         ).derive(shared_secret)
 
         return self.aes_key
+    
+
+    def generate_Ed25519(self):
+
+        private_key = Ed25519PrivateKey.generate()
+        public_key = private_key.public_key()
+
+        self.private_key_Ed25519 = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption())
+        
+        self.public_key_Ed25519 = public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo)
+
+        return self.private_key_Ed25519, self.public_key_Ed25519
 
 
-async def key_pairs(db: AsyncSession):
+
+def generate_token_payload(payload: dict, expire:int, private_key) -> str:
+
+    payload = jwt.encode(payload, private_key, algorithm="EdDSA")
+    return payload
+
+
+def verify_token(jwt_token: str, secret: bytes) -> dict:
+    try:
+        payload = jwt.decode(jwt_token, load_pem_public_key(bytes(secret)), algorithms=["EdDSA"])
+        return payload
+    except jwt.exceptions.ExpiredSignatureError:
+        print("Token expired")
+
+
+
+
+def generating_keys():
+    if not (_sql.inspect(_models.engine).has_table("keys") and _sql.inspect(_models.engine).has_table("users")):
+        _models.Base.metadata.drop_all(_models.engine)
+        _models.Base.metadata.create_all(_models.engine)
+
     while True:
-        pv, pub = key_generating().key_pair_str()
-        with pathlib.Path.cwd().absolute().open("a", encoding="utf-8") as f:
-            f.write(f"{pub}\t{pv}\n")
+        db: _orm.Session = _models.SessionLocal()
+        try:
+            a = key_generating()
+            server_pv, server_pub = a.key_pair_str()
+            ed25519_pv, ed25519_pub = a.generate_Ed25519()
 
-        dotenv.set_key(".env", "SERVER_PV_KEY", pv)
-        dotenv.set_key(".env", "SERVER_PUB_KEY", pub)
+            new_keys = _models.Key(
+                pv_key=server_pv,
+                pub_key=server_pub,
+                pv_key_Ed25519=ed25519_pv,
+                pub_key_Ed25519=ed25519_pub,
+            )
 
-        await asyncio.sleep(11 * 60)
+            db.add(new_keys)
+            db.commit()
+            db.refresh(new_keys)
+
+        except Exception as e:
+            db.rollback()
+            print("Key generation error:", e)
+
+        finally:
+            db.close()
+
+        time.sleep(60)
 
 
 
+def manage_keys(db: _orm.Session):
+    
 
 
+# if __name__ == "__main__":
+#     thread = threading.Thread(
+#         target=generating_keys
+#     )
+#     thread.start()
+    
 
-if __name__ == "__main__":
-    asyncio.run(key_pairs)
+
+    
+
+    
+    
+    
