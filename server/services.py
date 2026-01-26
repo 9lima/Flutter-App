@@ -1,16 +1,9 @@
 import models as _models
 import sqlalchemy.orm as _orm
 import sqlalchemy as _sql
-import random,string
-import asyncio, os, dotenv, pathlib, threading
 import datetime as _dt
-import jwt, base64, time, base64
-from secrets import choice   
-from string import printable
+import jwt, base64, time, random
 import schemas as _schemas
-from sqlalchemy import ForeignKey, func, select
-from dotenv import load_dotenv, find_dotenv
-
 
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization, hashes
@@ -19,26 +12,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from cryptography.hazmat.primitives.serialization import load_pem_public_key, load_pem_private_key
 from models import engine
 
-class one_pad_encrypt:
-    def __init__(self, message:str):
-        self.message = message
-        self.pad=""
-        self.ciphertext = ""
-        self.plaintext = ""
-        self.pad = ''.join(choice(string.printable) for _ in range(len(self.message)))
-
-    def encrypt(self) -> str:
-        self.ciphertext = ''.join(chr(ord(m) ^ ord(p)) for m, p in zip(self.message, self.pad))
-        return self.ciphertext
-
-    def decrypt(self) -> str:
-        decrypted = ''.join(chr(ord(c) ^ ord(p)) for c, p in zip(self.ciphertext, self.pad))
-        return decrypted
-
-
 
 def create_get_db():
-    if not (_sql.inspect(_models.engine).has_table("keys") and _sql.inspect(_models.engine).has_table("users")):
+    if not (_sql.inspect(_models.engine).has_table("x25519") and _sql.inspect(_models.engine).has_table("users")):
         _models.Base.metadata.drop_all(_models.engine)
         _models.Base.metadata.create_all(_models.engine)
 
@@ -51,16 +27,21 @@ def create_get_db():
 
 
 async def get_user_by_owner_id(owner_id: str , db: _orm.Session):
-    result = db.execute(select(_models.User).where(_models.User.owner_id == owner_id))
+    query = _sql.select(_models.User).where( _sql.func.substr( _models.User.owner_id, 1, _sql.func.instr(_models.User.owner_id, "@") - 1 ) == owner_id )
+    result = db.execute(query)
     if result:
         return result.first()
     else:
-        return None
+        return False
 
-def get_newest_KeyRow(db: _orm.Session):
-    stmt = (select(_models.Key).order_by(_models.Key.created_at.desc()).limit(1))
-    result = db.execute(stmt).scalar_one_or_none()
-    return result
+
+
+def get_newest_KeyRows(db: _orm.Session):
+    x25519_stmt = (_sql.select(_models.X25519_Key).order_by(_models.X25519_Key.x25519_created_at.desc()).limit(1))
+    ed25519_stmt = (_sql.select(_models.Ed25519_Key).order_by(_models.Ed25519_Key.ed25519_created_at.desc()).limit(1))
+    x25519_result = db.execute(x25519_stmt).scalar_one_or_none()
+    ed25519_result = db.execute(ed25519_stmt).scalar_one_or_none()
+    return (x25519_result, ed25519_result)
 
 
 
@@ -124,7 +105,7 @@ class key_generating:
 
 
 
-def generate_token_payload(payload: dict, expire:int, private_key) -> str:
+def generate_token_payload(payload: dict, private_key) -> str:
 
     payload = jwt.encode(payload, private_key, algorithm="EdDSA")
     return payload
@@ -140,24 +121,17 @@ def verify_token(jwt_token: str, secret: bytes) -> dict:
 
 
 
-def generating_keys():
-    if not (_sql.inspect(_models.engine).has_table("keys") and _sql.inspect(_models.engine).has_table("users")):
-        _models.Base.metadata.drop_all(_models.engine)
-        _models.Base.metadata.create_all(_models.engine)
+def generating_ed_keys():
+    # if not _sql.inspect(_models.engine).has_table("users"):
+    #     _models.Base.metadata.drop_all(_models.engine)
+    #     _models.Base.metadata.create_all(_models.engine)
 
     while True:
         db: _orm.Session = _models.SessionLocal()
         try:
             a = key_generating()
             server_pv, server_pub = a.key_pair_str()
-            ed25519_pv, ed25519_pub = a.generate_Ed25519()
-
-            new_keys = _models.Key(
-                pv_key=server_pv,
-                pub_key=server_pub,
-                pv_key_Ed25519=ed25519_pv,
-                pub_key_Ed25519=ed25519_pub,
-            )
+            new_keys = _models.X25519_Key(pv_key=server_pv, pub_key=server_pub)
 
             db.add(new_keys)
             db.commit()
@@ -170,24 +144,34 @@ def generating_keys():
         finally:
             db.close()
 
-        time.sleep(60)
+        time.sleep(random.randint(30*60,40*60))
 
 
+def generating_x_keys():
+    # if not _sql.inspect(_models.engine).has_table("users"):
+    #     _models.Base.metadata.drop_all(_models.engine)
+    #     _models.Base.metadata.create_all(_models.engine)
 
-def manage_keys(db: _orm.Session):
-    
+    while True:
+        db: _orm.Session = _models.SessionLocal()
+        try:
+            b = key_generating()
+            ed25519_pv, ed25519_pub = b.generate_Ed25519()
+            new_keys = _models.Ed25519_Key(pv_key_Ed25519=ed25519_pv, pub_key_Ed25519=ed25519_pub)
+
+            db.add(new_keys)
+            db.commit()
+            db.refresh(new_keys)
+
+        except Exception as e:
+            db.rollback()
+            print("Key generation error:", e)
+
+        finally:
+            db.close()
+
+        time.sleep(random.randint(20*60,30*60))
+
 
 
 # if __name__ == "__main__":
-#     thread = threading.Thread(
-#         target=generating_keys
-#     )
-#     thread.start()
-    
-
-
-    
-
-    
-    
-    

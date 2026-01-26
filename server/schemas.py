@@ -7,9 +7,8 @@ class PublicKeyRequest_Base(_pydantic.BaseModel):
     model_config = _pydantic.ConfigDict(from_attributes=True)
 
 
-class PublicKeyResponse(_pydantic.BaseModel):
+class PublicKeyResponse(PublicKeyRequest_Base):
     pub_key: str
-    exp: int
     jwt: str
 
     model_config = _pydantic.ConfigDict(from_attributes=True)

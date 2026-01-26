@@ -14,35 +14,51 @@ class Base(DeclarativeBase):
     pass
 
 
-class Key(Base):
-    __tablename__ = "keys"
+class X25519_Key(Base):
+    __tablename__ = "x25519"
 
     id = _sql.Column(_sql.Integer, primary_key=True, index=True)
 
-    pv_key = _sql.Column(_sql.String, unique=True, index=True)
-    pub_key = _sql.Column(_sql.String, unique=True, index=True)
-    
-    pv_key_Ed25519 = _sql.Column(_sql.String, unique=True, index=True)
-    pub_key_Ed25519 = _sql.Column(_sql.String, unique=True, index=True)
+    pv_key = _sql.Column(_sql.String, unique=True)
+    pub_key = _sql.Column(_sql.String, unique=True)
 
-    created_at = _sql.Column(_sql.Integer, default=int(_dt.datetime.now().timestamp()))
-    users = _orm.relationship("User", back_populates="key", cascade="all, delete-orphan")
+    x25519_created_at = _sql.Column(_sql.Integer, default=int(_dt.datetime.now().timestamp()))
+
+    users = _orm.relationship("User", back_populates="key_x", cascade="all, delete-orphan")
+
+
+class Ed25519_Key(Base):
+    __tablename__ = "ed25519"
+
+    id = _sql.Column(_sql.Integer, primary_key=True, index=True)
+
+    pv_key_Ed25519 = _sql.Column(_sql.String, unique=True, nullable=False)
+    pub_key_Ed25519 = _sql.Column(_sql.String, unique=True, nullable=False)
+
+    ed25519_created_at = _sql.Column(_sql.Integer, default=int(_dt.datetime.now().timestamp()))
+
+    users = _orm.relationship("User", back_populates="key_ed", cascade="all, delete-orphan")
+
+
+
 
 
 class User(Base):
     __tablename__ = "users"
 
     id = _sql.Column(_sql.Integer, primary_key=True, index = True, unique=True)
-    owner_id = _sql.Column( _sql.Integer, nullable=False, index=True )
+    owner_id = _sql.Column( _sql.Integer, index=True )
 
     jwt = _sql.Column(_sql.String, unique=True, index = True)
     data_created = _sql.Column(_sql.Integer, default=int(_dt.datetime.now().timestamp()))
     exp = _sql.Column(_sql.Integer)
     image = _sql.Column(_sql.LargeBinary, nullable=True)
 
-    key_id = _sql.Column(_sql.Integer,_sql.ForeignKey("keys.id"))
+    x25519_key_id = _sql.Column(_sql.Integer,_sql.ForeignKey("x25519.id"))
+    ed25519_key_id = _sql.Column(_sql.Integer,_sql.ForeignKey("ed25519.id"))
 
-    key = _orm.relationship("Key", back_populates="users")
+    key_ed = _orm.relationship("Ed25519_Key", back_populates="users")
+    key_x = _orm.relationship("X25519_Key", back_populates="users")
 
 
 # if __name__ == "__main__":
