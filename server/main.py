@@ -11,6 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from secrets import choice   
 import random,string, threading, asyncio
 from concurrent.futures import ThreadPoolExecutor
+import base64
+from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives import serialization
 
 Base.metadata.drop_all(engine)
 Base.metadata.create_all(engine)
@@ -21,13 +24,13 @@ for t in threads:
 
 
 app = _fastapi.FastAPI()
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],  # or your frontend URL
-#     allow_credentials=True,
-#     allow_methods=["*"],  # <-- THIS enables OPTIONS
-#     allow_headers=["*"],
-# )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:27432"],  # adjust to your client
+    allow_credentials=True,
+    allow_methods=["*"],  # allow GET, POST, PUT, DELETE, OPTIONS
+    allow_headers=["*"],
+)
 
 
 
@@ -47,32 +50,44 @@ async def create_user(user: _schemas.PublicKeyRequest_Base, db: _orm.Session = _
     if user_exist:
 
         return {'pub_key':"user_exist", 'exp': 111111, 'jwt': "user_exist user_exist"}
-    
-        
+
     row_object_x25519, row_object_ed25519 = _services.get_newest_KeyRows(db)
 
     server_pub, ed25519_pv = (row_object_x25519.pub_key, row_object_ed25519.pv_key_Ed25519)
+    aes = _services.sharedSecret_AES(user.clientPublicKeyBase64, bytes(row_object_x25519.pv_key))
+    
     expire = int(_dt.datetime.now().timestamp() + 360)
 
     new_owner_id = str(user.owner_id+"@"+''.join(choice(string.printable.replace('@', '')) for _ in range(7)))
-    payload = {"owner_id": new_owner_id, "pub_key": server_pub, "exp":expire}
+
+    loaded_public_key = x25519.X25519PublicKey.from_public_bytes(server_pub).public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+
+    payload = {"owner_id": new_owner_id, "pub_key": loaded_public_key.decode().splitlines()[1], "exp":expire}
+
     token = _services.generate_token_payload(payload, ed25519_pv)
 
-    key_response = {"owner_id": user.owner_id, "pub_key":server_pub, "jwt":token}
+    key_response = {"owner_id": user.owner_id, "pub_key": loaded_public_key.decode().splitlines()[1], "jwt":token}
     Public_Key_Response = _schemas.PublicKeyResponse.model_validate(key_response)
 
-    db_user = User(owner_id=new_owner_id, jwt=token, ed25519_key_id = row_object_ed25519.id, x25519_key_id=row_object_x25519.id, exp=expire)
+    db_user = User(owner_id=new_owner_id, jwt=token, ed25519_key_id = row_object_ed25519.id, x25519_key_id=row_object_x25519.id, exp=expire, clientPublicKeyBase64 = user.clientPublicKeyBase64, sharedSecret_AES=aes)
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
 
     return Public_Key_Response.model_dump(mode='json')
+
+
+
+@app.get("/")
+async def data_incomming(user: _schemas.DataResponse, db: _orm.Session = _fastapi.Depends(_services.create_get_db)):
+    owner = user.owner_id
+    user_exist = await _services.get_user_by_owner_id(owner, db)
+    if not user_exist:
+
+        return {'pub_key':"user_exist", 'exp': 111111, 'jwt': "user_exist user_exist"}
     
+    data = _services.decrypt_aes(user_exist.sharedSecret_AES, user.nonce, )
 
 
-# @app.get("/")
-# async def get_users(db: _orm.Session = _fastapi.Depends(_services.create_get_db)):
-#     results = db.execute(_sql.select(User))
-#     users = results.scalars().first()
-#     return {"users": users}
+    
 

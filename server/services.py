@@ -5,6 +5,7 @@ import datetime as _dt
 import jwt, base64, time, random
 import schemas as _schemas
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -27,7 +28,7 @@ def create_get_db():
 
 
 async def get_user_by_owner_id(owner_id: str , db: _orm.Session):
-    query = _sql.select(_models.User).where( _sql.func.substr( _models.User.owner_id, 1, _sql.func.instr(_models.User.owner_id, "@") - 1 ) == owner_id )
+    query = _sql.select(_models.User).where( _sql.func.substr(_models.User.owner_id, 1, _sql.func.instr(_models.User.owner_id, "@") - 1 ) == owner_id)
     result = db.execute(query)
     if result:
         return result.first()
@@ -46,7 +47,7 @@ def get_newest_KeyRows(db: _orm.Session):
 
 
 class key_generating:
-    __slots__ = ('pv_bytes', 'pub_bytes', 'pv_str', 'pub_str', 'aes_key','private_key_Ed25519','public_key_Ed25519')
+    __slots__ = ('pv_bytes', 'pub_bytes','private_key_Ed25519','public_key_Ed25519')
 
     def __init__(self):
 
@@ -55,37 +56,22 @@ class key_generating:
 
         # Store keys as Base64 strings for easy transport / JSON
         self.pv_bytes = private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PrivateFormat.Raw,
                 encryption_algorithm=serialization.NoEncryption())
 
         self.pub_bytes = public_key.public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo)
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw)
 
     def key_pair_bytes(self) -> tuple[bytes, bytes]:
         return self.pv_bytes, self.pub_bytes
 
-    def key_pair_str(self) -> tuple[str, str]:
-        self.pv_str=str(self.pv_bytes.decode().splitlines()[1])
-        self.pub_str = str(self.pub_bytes.decode().splitlines()[1])
-        return self.pv_str, self.pub_str
-
-    def generate_aes_key(self, remote_public_key_b64: str) -> bytes:
-        remote_pub_bytes = base64.b64encode(remote_public_key_b64)
-        remote_public_key = x25519.X25519PublicKey.from_public_bytes(remote_pub_bytes)
-
-        shared_secret = self.pv_bytes.exchange(remote_public_key)
-
-        self.aes_key = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=None,
-            info=b"handshake data",
-        ).derive(shared_secret)
-
-        return self.aes_key
-    
+    # def key_pair_str(self) -> tuple[str, str]:
+    #     self.pv_str=str(self.pv_bytes.decode().splitlines()[1])
+    #     self.pub_str = str(self.pub_bytes.decode().splitlines()[1])
+    #     return self.pv_str, self.pub_str
+   
 
     def generate_Ed25519(self):
 
@@ -105,15 +91,46 @@ class key_generating:
 
 
 
+def sharedSecret_AES(clientPublicKeyBase64: str, server_private_bytes: bytes):
+    # Load server private key from raw 32 bytes
+    server_private_key = x25519.X25519PrivateKey.from_private_bytes(server_private_bytes)
+
+    # Load client public key from Base64
+    client_pub_bytes = base64.b64decode(clientPublicKeyBase64)
+    client_public_key = x25519.X25519PublicKey.from_public_bytes(client_pub_bytes)
+
+    # Compute shared secret
+    shared_secret = server_private_key.exchange(client_public_key)
+
+    # Derive AES key from shared secret
+    aes_key_bytes = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"handshake shared_secret aes key",
+    ).derive(shared_secret)
+
+    return aes_key_bytes
+
+
+
+def decrypt_aes(key: bytes, nonce: bytes, ciphertext: bytes, tag: bytes) -> bytes:
+    aesgcm = AESGCM(key)
+    data = aesgcm.decrypt(nonce, ciphertext, tag)
+
+    return data
+
+
+
 def generate_token_payload(payload: dict, private_key) -> str:
 
     payload = jwt.encode(payload, private_key, algorithm="EdDSA")
     return payload
 
 
-def verify_token(jwt_token: str, secret: bytes) -> dict:
+def verify_token(jwt_token: str, public_key) -> dict:
     try:
-        payload = jwt.decode(jwt_token, load_pem_public_key(bytes(secret)), algorithms=["EdDSA"])
+        payload = jwt.decode(jwt_token, load_pem_public_key(bytes(public_key)), algorithms=["EdDSA"])
         return payload
     except jwt.exceptions.ExpiredSignatureError:
         print("Token expired")
@@ -122,15 +139,12 @@ def verify_token(jwt_token: str, secret: bytes) -> dict:
 
 
 def generating_ed_keys():
-    # if not _sql.inspect(_models.engine).has_table("users"):
-    #     _models.Base.metadata.drop_all(_models.engine)
-    #     _models.Base.metadata.create_all(_models.engine)
 
     while True:
         db: _orm.Session = _models.SessionLocal()
         try:
             a = key_generating()
-            server_pv, server_pub = a.key_pair_str()
+            server_pv, server_pub = a.key_pair_bytes()
             new_keys = _models.X25519_Key(pv_key=server_pv, pub_key=server_pub)
 
             db.add(new_keys)
@@ -148,9 +162,6 @@ def generating_ed_keys():
 
 
 def generating_x_keys():
-    # if not _sql.inspect(_models.engine).has_table("users"):
-    #     _models.Base.metadata.drop_all(_models.engine)
-    #     _models.Base.metadata.create_all(_models.engine)
 
     while True:
         db: _orm.Session = _models.SessionLocal()
