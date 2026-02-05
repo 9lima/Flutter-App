@@ -117,10 +117,10 @@ def sharedSecret_AES(clientPublicKeyBase64: str, server_private_bytes: bytes, no
 
 
 
-def decrypt_aes(key: bytes, nonce: str, ciphertext: str, mac: str=None) -> bytes:
+def decrypt_aes(key: bytes, nonce: str, ciphertext, mac) -> bytes:
     nonce = base64.b64decode(nonce)
-    ciphertext = base64.b64decode(ciphertext)
-    mac = base64.b64decode(mac)
+    ciphertext = bytes(ciphertext)
+    mac = bytes(mac)
     aesgcm = AESGCM(key)
     data = aesgcm.decrypt(nonce, ciphertext + mac, None)
 

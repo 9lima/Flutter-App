@@ -34,14 +34,6 @@ app.add_middleware(
 
 
 
-# @app.get("/")
-# async def create_user():
-
-
-#     return {'pubKey':" String pubKey", 'exp': 123456789, 'jwt': "String jwt"}
-
-
-
 @app.post("/key")
 async def create_user(user: _schemas.PublicKeyRequest_Base, db: _orm.Session = _fastapi.Depends(_services.create_get_db)):
     owner = user.owner_id
@@ -65,7 +57,7 @@ async def create_user(user: _schemas.PublicKeyRequest_Base, db: _orm.Session = _
     key_response = {"owner_id": user.owner_id, "pub_key": base64.b64encode(server_pub).decode('utf-8'), "jwt":token}
     Public_Key_Response = _schemas.PublicKeyResponse.model_validate(key_response)
 
-    db_user = User(owner_id=new_owner_id, jwt=token, ed25519_key_id = row_object_ed25519.id, x25519_key_id=row_object_x25519.id, exp=expire, clientPublicKeyBase64 = user.clientPublicKeyBase64, sharedSecret_AES=aes)
+    db_user = User(owner_id=new_owner_id, jwt=token, ed25519_key_id = row_object_ed25519.id, x25519_key_id=row_object_x25519.id, exp=expire, clientPublicKeyBase64 = user.clientPublicKeyBase64, sharedSecret_AES=aes, aesNonce=user.aesNonce)
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -76,9 +68,9 @@ async def create_user(user: _schemas.PublicKeyRequest_Base, db: _orm.Session = _
     return Public_Key_Response.model_dump(mode='json')
 
 
-    
-    
-@app.post("/")
+
+
+@app.post("/data")
 async def upload_cipher(req: dict, db: _orm.Session = _fastapi.Depends(_services.create_get_db)):
     # old_owner = req.owner_id
     user_exist = await _services.get_user_by_owner_id(req['owner_id'], db)
@@ -87,17 +79,9 @@ async def upload_cipher(req: dict, db: _orm.Session = _fastapi.Depends(_services
     
     path = pathlib.Path('.') / 'images' / (str(uuid.uuid4()) + '.jpg')
     with open(path, "wb") as f:
-        f.write(_services.decrypt_aes(user_exist.sharedSecret_AES, req["aesNonce"], req["ciphertext"], req["mac"]))
+        f.write(_services.decrypt_aes(user_exist.sharedSecret_AES, user_exist.aesNonce, req["ciphertext"], req["mac"]))
     
 
     print(base64.b64encode(user_exist.sharedSecret_AES).decode('utf-8'))
     return {'ok':'ok'}
-
-
-@app.post("/data")
-async def upload_cipher(req: dict, db: _orm.Session = _fastapi.Depends(_services.create_get_db)):
-    # old_owner = req.owner_id
-    print(req)
-    return {'ok':'ok'}
-
 
