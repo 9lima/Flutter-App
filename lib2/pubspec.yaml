@@ -1,0 +1,38 @@
+name: flutter_application_4
+description: "A new Flutter project."
+
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  flutter_bloc: ^9.1.1
+  camera: ^0.11.3
+  image_picker: ^1.2.1
+  cryptography: ^2.9.0
+  http: ^1.6.0
+  flutter_secure_storage: ^10.0.0
+  dio:
+  get_it: ^9.2.0
+  #
+  rxdart:
+  fluttertoast:
+  internet_connection_checker:
+  connectivity_plus:
+  fluttertoast:
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
